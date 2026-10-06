@@ -1,0 +1,138 @@
+name: SDK stream cleanup validation
+
+on:
+  push:
+    branches:
+      - validation/minimax-sdk-stream-cleanup-20261006
+    paths:
+      - .github/workflows/minimax-stream-cleanup-validation.yml
+      - .github/validation/minimax-stream-cleanup/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: minimax-sdk-stream-cleanup-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-bun:
+    if: github.repository == 'dvd233/cli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the audited feature commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: dvd233/cli
+          ref: da978118b8accb38e007582a8a226ab833bafaad
+          fetch-depth: 2
+          persist-credentials: false
+          path: source
+      - name: Check out validation-only files from this workflow commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: harness
+          sparse-checkout: .github/validation/minimax-stream-cleanup
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.2'
+      - name: Verify source binding and install pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          H="$GITHUB_WORKSPACE/harness/.github/validation/minimax-stream-cleanup"
+          bash "$H/verify-source.sh" "$GITHUB_WORKSPACE/source"
+          mkdir -p "$RUNNER_TEMP/mmx-logs"
+          {
+            printf 'Workflow SHA=%s\n' "$GITHUB_SHA"
+            git -C source show -s --format=fuller HEAD
+            git -C source rev-parse HEAD^{tree}
+            sha256sum "$H"/*
+            bun --version
+            node --version
+          } | tee "$RUNNER_TEMP/mmx-logs/native-binding.txt"
+          cd source
+          bash "$H/run-isolated.sh" "$RUNNER_TEMP/mmx-native" bun install --frozen-lockfile --ignore-scripts
+      - name: Run native gates and isolated SDK lifecycle/transport probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/harness/.github/validation/minimax-stream-cleanup/validate-native.sh" \
+            "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/mmx-native" 2>&1 | tee "$RUNNER_TEMP/mmx-logs/native.log"
+      - name: Preserve source-bound native validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: minimax-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mmx-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+  node-sdk:
+    if: github.repository == 'dvd233/cli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '24']
+    steps:
+      - name: Check out the audited feature commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: dvd233/cli
+          ref: da978118b8accb38e007582a8a226ab833bafaad
+          fetch-depth: 2
+          persist-credentials: false
+          path: source
+      - name: Check out validation-only files from this workflow commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: harness
+          sparse-checkout: .github/validation/minimax-stream-cleanup
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.2'
+      - name: Verify source binding and install pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          H="$GITHUB_WORKSPACE/harness/.github/validation/minimax-stream-cleanup"
+          bash "$H/verify-source.sh" "$GITHUB_WORKSPACE/source"
+          mkdir -p "$RUNNER_TEMP/mmx-logs"
+          {
+            printf 'Workflow SHA=%s\n' "$GITHUB_SHA"
+            git -C source show -s --format=fuller HEAD
+            git -C source rev-parse HEAD^{tree}
+            sha256sum "$H"/*
+            bun --version
+            node --version
+          } | tee "$RUNNER_TEMP/mmx-logs/node-binding.txt"
+          cd source
+          bash "$H/run-isolated.sh" "$RUNNER_TEMP/mmx-node-${{ matrix.node }}" bun install --frozen-lockfile --ignore-scripts
+      - name: Validate the built SDK on Node ${{ matrix.node }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/harness/.github/validation/minimax-stream-cleanup/validate-node.sh" \
+            "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/mmx-node-${{ matrix.node }}" 2>&1 | tee "$RUNNER_TEMP/mmx-logs/node.log"
+      - name: Preserve source-bound Node validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: minimax-node-${{ matrix.node }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mmx-logs/
+          retention-days: 7
+          if-no-files-found: warn
